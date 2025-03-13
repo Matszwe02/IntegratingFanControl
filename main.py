@@ -25,6 +25,7 @@ always_change = False
 
 
 not_break = True
+n = 0
 
 fan_app_path = './AsusFanControl.exe'
 image_path = './icon.png'
@@ -144,7 +145,7 @@ def setup():
         if fan_speed < 0: fan_speed = 0
         if fan_speed > 100: fan_speed = 100
         
-        if last_fan != fan_speed or always_change:
+        if last_fan != fan_speed or always_change or n > 6:
             set_fan_speed(int(fan_speed))
         last_fan = fan_speed
         
@@ -154,6 +155,7 @@ def setup():
             time.sleep(4)
             if temp < stop_at_temp - 20:
                 time.sleep(5)
+        n += 1
 
 
 
