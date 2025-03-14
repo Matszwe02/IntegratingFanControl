@@ -117,7 +117,7 @@ def main():
 
 
 def setup():
-    global fan_speed, last_fan, avg_temp
+    global fan_speed, last_fan, avg_temp, n
     
     while not_break:
         
