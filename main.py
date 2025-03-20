@@ -145,6 +145,10 @@ def setup():
         if fan_speed < 0: fan_speed = 0
         if fan_speed > 100: fan_speed = 100
         
+        if temp < 5:
+            set_fan_speed(100)
+            raise ConnectionError("CPU temperature not read")
+        
         if last_fan != fan_speed or always_change or n > 6:
             set_fan_speed(int(fan_speed))
         last_fan = fan_speed
