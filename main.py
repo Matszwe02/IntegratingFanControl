@@ -31,6 +31,8 @@ fan_app_path = './AsusFanControl.exe'
 image_path = './icon.png'
 
 
+status_str = ''
+
 
 def toggle_startup(icon):
     try:
@@ -89,7 +91,7 @@ def on_exit(icon):
 
 
 def show_status(icon):
-    icon.notify(f"Current temperature: {get_temperature()}°C\n{get_fan_speed()}   ({int(fan_speed)}%)")
+    icon.notify(f"Current temperature: {get_temperature()}°C\n{get_fan_speed()}   ({int(fan_speed)}%)\n{status_str}")
 
 
 
@@ -117,9 +119,11 @@ def main():
 
 
 def setup():
-    global fan_speed, last_fan, avg_temp, n
+    global fan_speed, last_fan, avg_temp, n, status_str
     
     while not_break:
+        
+        status_str = 'Everything ok'
         
         temp = get_temperature()
         print(temp)
@@ -147,7 +151,8 @@ def setup():
         
         if temp < 5:
             set_fan_speed(100)
-            raise ConnectionError("CPU temperature not read")
+            time.sleep(10)
+            status_str = 'CRITITAL: Cannot gather CPU temp'
         
         if last_fan != fan_speed or always_change or n > 6:
             set_fan_speed(int(fan_speed))
