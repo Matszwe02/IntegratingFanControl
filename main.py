@@ -6,6 +6,7 @@ from PIL import Image
 import threading
 import os
 import winreg
+import json
 
 
 fan_speed = 0
@@ -13,25 +14,22 @@ fan_speed = 0
 last_fan = -1
 avg_temp = -1
 
-
-max_temp = 85
-min_temp = 80
-full_at_temp = 95
-stop_at_temp = 70
-change_factor = 0.2
-
-deadzone = 10
-always_change = False
-
+config = {}
 
 not_break = True
 n = 0
 
 fan_app_path = './AsusFanControl.exe'
 image_path = './icon.png'
+config_path = './config.json'
 
+deadzone = 10
 
 status_str = ''
+
+icon = None
+
+driver_fix = False
 
 
 def toggle_startup(icon):
@@ -90,20 +88,69 @@ def on_exit(icon):
     exit()
 
 
-def show_status(icon):
-    icon.notify(f"Current temperature: {get_temperature()}°C\n{get_fan_speed()}   ({int(fan_speed)}%)\n{status_str}")
+def save_config():
+    global config
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=4)
 
+def update_config(key, value):
+    global config
+    config[key] = value
+    save_config()
+    icon.update_menu() # Update the menu to reflect the changes
+
+def change_temp_setting(key, delta):
+    def handler(icon, item):
+        update_config(key, config[key] + delta)
+    return handler
+
+def toggle_always_change(icon, item):
+    update_config("always_change", not config["always_change"])
+
+def show_status(icon):
+    config_status = "\nCurrent Configuration:\n"
+    for key, value in config.items():
+        config_status += f"{key}: {value}\n"
+    icon.notify(f"Current temperature: {get_temperature()}°C\n{get_fan_speed()}   ({int(fan_speed)}%)\n{status_str}{config_status}")
 
 
 def main():
     global image_path, fan_app_path
     global not_break
+    global icon
     image_path = resource_path("icon.png")
     fan_app_path = resource_path("AsusFanControl.exe")
     image = Image.open(image_path).resize((64, 64))
     
     menu = pystray.Menu(
         pystray.MenuItem('Show Status', show_status),
+        pystray.MenuItem('Settings', pystray.Menu(
+            pystray.MenuItem(lambda item: f'Max Temp: {config.get("max_temp", 85)}', pystray.Menu(
+                pystray.MenuItem('+5', change_temp_setting('max_temp', 5)),
+                pystray.MenuItem('-5', change_temp_setting('max_temp', -5))
+            )),
+            pystray.MenuItem(lambda item: f'Min Temp: {config.get("min_temp", 80)}', pystray.Menu(
+                pystray.MenuItem('+5', change_temp_setting('min_temp', 5)),
+                pystray.MenuItem('-5', change_temp_setting('min_temp', -5))
+            )),
+            pystray.MenuItem(lambda item: f'Full at Temp: {config.get("full_at_temp", 95)}', pystray.Menu(
+                pystray.MenuItem('+5', change_temp_setting('full_at_temp', 5)),
+                pystray.MenuItem('-5', change_temp_setting('full_at_temp', -5))
+            )),
+            pystray.MenuItem(lambda item: f'Stop at Temp: {config.get("stop_at_temp", 70)}', pystray.Menu(
+                pystray.MenuItem('+5', change_temp_setting('stop_at_temp', 5)),
+                pystray.MenuItem('-5', change_temp_setting('stop_at_temp', -5))
+            )),
+            pystray.MenuItem(lambda item: f'Change Factor: {config.get("change_factor", 0.2):.1f}', pystray.Menu(
+                pystray.MenuItem('+0.1', change_temp_setting('change_factor', 0.1)),
+                pystray.MenuItem('-0.1', change_temp_setting('change_factor', -0.1))
+            )),
+            pystray.MenuItem(lambda item: f'Deadzone: {config.get("deadzone", 10)}', pystray.Menu(
+                pystray.MenuItem('+1', change_temp_setting('deadzone', 1)),
+                pystray.MenuItem('-1', change_temp_setting('deadzone', -1))
+            )),
+            pystray.MenuItem('Always Change Fan Speed', toggle_always_change, checked=lambda item: config.get("always_change", False))
+        )),
         pystray.MenuItem('Toggle Auto Start', toggle_startup),
         pystray.MenuItem('Exit', on_exit)
     )
@@ -118,9 +165,32 @@ def main():
 
 
 
+def load_config():
+    global config
+    default_config = {
+        "max_temp": 85,
+        "min_temp": 80,
+        "full_at_temp": 95,
+        "stop_at_temp": 70,
+        "change_factor": 0.2,
+        "deadzone": 10,
+        "always_change": False
+    }
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"Config file not found or invalid at {config_path}. Creating with default values.")
+        config = default_config
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=4)
+
+
 def setup():
-    global fan_speed, last_fan, avg_temp, n, status_str
+    global fan_speed, last_fan, avg_temp, n, status_str, driver_fix
     
+    load_config()
+
     while not_break:
         
         status_str = 'Everything ok'
@@ -128,22 +198,22 @@ def setup():
         temp = get_temperature()
         print(temp)
         
-        if temp > max_temp:
-            fan_speed += (temp-max_temp)/2
+        if temp > config["max_temp"]:
+            fan_speed += (temp-config["max_temp"])/2
         
-        if temp < min_temp:
-            fan_speed -= (min_temp-temp)/5
+        if temp < config["min_temp"]:
+            fan_speed -= (config["min_temp"]-temp)/5
         
         
         if avg_temp == -1: avg_temp = temp
-        D = (temp - avg_temp) * change_factor
+        D = (temp - avg_temp) * config["change_factor"]
         avg_temp = ((avg_temp * 9 + temp) / 10)
         
         fan_speed += max(D, 0)
         
         
-        if temp > full_at_temp: fan_speed = 100
-        if temp < stop_at_temp: fan_speed = 0
+        if temp > config["full_at_temp"]: fan_speed = 100
+        if temp < config["stop_at_temp"]: fan_speed = 0
         
         fan_speed = int(fan_speed)
         if fan_speed < 0: fan_speed = 0
@@ -154,15 +224,24 @@ def setup():
             time.sleep(10)
             status_str = 'CRITITAL: Cannot gather CPU temp'
         
-        if last_fan != fan_speed or always_change or n > 6:
+        if last_fan != fan_speed or config["always_change"] or n > 6:
             set_fan_speed(int(fan_speed))
         last_fan = fan_speed
         
+        if not driver_fix:
+            print('Running driver fix')
+            os.system('run.bat')
+            driver_fix = True
+            continue
+        
+        if status_str != 'Everything ok':
+            icon.notify(status_str)
+            time.sleep(10)
         
         time.sleep(1)
-        if temp < stop_at_temp and D < 2:
+        if temp < config["stop_at_temp"] and D < 2:
             time.sleep(4)
-            if temp < stop_at_temp - 20:
+            if temp < config["stop_at_temp"] - 20:
                 time.sleep(5)
         n += 1
 
