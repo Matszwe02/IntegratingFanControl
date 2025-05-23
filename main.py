@@ -195,10 +195,10 @@ def main():
 def load_config():
     global config
     default_config = {
-        "max_temp": 85,
-        "min_temp": 80,
-        "full_at_temp": 95,
-        "stop_at_temp": 70,
+        "max_temp": 80,
+        "min_temp": 75,
+        "full_at_temp": 90,
+        "stop_at_temp": 65,
         "change_factor": 0.2,
         "deadzone": 10,
         "always_change": False
