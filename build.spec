@@ -4,7 +4,7 @@ block_cipher = None
 
 a = Analysis(['main.py'],
              pathex=[],
-             binaries=[('AsusFanControl.exe', '.'), ('AsusWinIO64.dll', '.')],
+             binaries=[('AsusWinIO64.dll', '.')],
              datas=[('icon.png', '.')],
              hiddenimports=[],
              hookspath=[],

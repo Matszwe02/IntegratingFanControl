@@ -7,7 +7,33 @@ import threading
 import os
 import winreg
 import json
+import ctypes
+import getpass
 
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+
+# Load the DLL
+dll_path = resource_path("AsusWinIO64.dll")
+asus_dll = ctypes.WinDLL(dll_path)
+
+# Define the function signatures
+asus_dll.InitializeWinIo.restype = ctypes.c_bool
+asus_dll.ShutdownWinIo.restype = ctypes.c_bool
+asus_dll.HealthyTable_SetFanIndex.argtypes = [ctypes.c_byte]
+asus_dll.HealthyTable_SetFanTestMode.argtypes = [ctypes.c_char]
+asus_dll.HealthyTable_SetFanPwmDuty.argtypes = [ctypes.c_byte]
+asus_dll.HealthyTable_FanRPM.restype = ctypes.c_int
+asus_dll.HealthyTable_FanCounts.restype = ctypes.c_int
+asus_dll.Thermal_Read_Cpu_Temperature.restype = ctypes.c_ulong
+
+# Initialize WinIo
+if not asus_dll.InitializeWinIo():
+    print("Failed to initialize WinIo")
+    sys.exit()
 
 fan_speed = 0
 
@@ -19,8 +45,7 @@ config = {}
 not_break = True
 n = 0
 
-fan_app_path = './AsusFanControl.exe'
-image_path = './icon.png'
+image_path = resource_path("icon.png")
 config_path = './config.json'
 
 deadzone = 10
@@ -51,40 +76,44 @@ def toggle_startup(icon):
 
 def get_temperature():
     """Get current temperature"""
-    result = subprocess.run([fan_app_path, '--get-cpu-temp'], capture_output=True, text=True, shell=True)
-    x = result.stdout.strip().replace('Current CPU temp:', '')
-    return float(x)
+    temp_ulong = asus_dll.Thermal_Read_Cpu_Temperature()
+    temp_celsius = temp_ulong
+    return temp_celsius
 
 
 def get_fan_speed():
     """Get current fan speed"""
-    result = subprocess.run([fan_app_path, '--get-fan-speeds'], capture_output=True, text=True, shell=True)
-    return result.stdout.strip()
-
+    fan_speeds = []
+    fan_count = asus_dll.HealthyTable_FanCounts()
+    for i in range(fan_count):
+        asus_dll.HealthyTable_SetFanIndex(i)
+        fan_speed = asus_dll.HealthyTable_FanRPM()
+        fan_speeds.append(fan_speed)
+    return ", ".join(map(str, fan_speeds))
 
 
 def set_fan_speed(speed):
     """Set fan speed"""
-    # if speed < deadzone: speed = 0
-    
     out_speed = deadzone + (speed * (100 - deadzone) / 100)
-    if out_speed == deadzone: out_speed = 0
+    if out_speed <= deadzone:
+        out_speed = 0
 
-    subprocess.run([fan_app_path, '--set-fan-speed=0:' + str(max(int(out_speed), 1))], shell=True)
-    subprocess.run([fan_app_path, '--set-fan-speed=1:' + str(max(int(out_speed*4/5), 1))], shell=True)
-
-
-
-def resource_path(relative_path):
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+    value = int(out_speed / 100.0 * 255)
+    
+    fan_count = asus_dll.HealthyTable_FanCounts()
+    print(f'{fan_count=}')
+    print(f'{value=}')
+    for i in range(fan_count):
+        asus_dll.HealthyTable_SetFanIndex(i)
+        asus_dll.HealthyTable_SetFanTestMode(1)
+        asus_dll.HealthyTable_SetFanPwmDuty(value)
 
 
 def on_exit(icon):
     global not_break
     not_break = False
     icon.stop()
+    asus_dll.ShutdownWinIo()
     exit()
 
 
@@ -115,11 +144,9 @@ def show_status(icon):
 
 
 def main():
-    global image_path, fan_app_path
+    global image_path
     global not_break
     global icon
-    image_path = resource_path("icon.png")
-    fan_app_path = resource_path("AsusFanControl.exe")
     image = Image.open(image_path).resize((64, 64))
     
     menu = pystray.Menu(
