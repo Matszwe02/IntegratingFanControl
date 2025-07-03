@@ -6,16 +6,14 @@ from PIL import Image
 import threading
 import os
 import json
-import ctypes
 import getpass
-import re # Added re import
+import re
+import ctypes # Added ctypes for DLL loading
+from fan_controller import FanController
+from utils import UtilsWin, UtilsLinux # Import the new utility classes
 
 if sys.platform == "win32":
     import winreg
-
-
-fan_speed_percentage = 0.0 # Initialize fan speed percentage
-
 
 def resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -42,161 +40,26 @@ def custom_notify(icon_obj, message, title=None):
     else:
         print(f"Notification (unsupported platform): {title}: {message}")
 
-
-# Load the DLL
-if sys.platform == "win32":
-    dll_path = resource_path("AsusWinIO64.dll")
-    asus_dll = ctypes.WinDLL(dll_path)
-
-    # Define the function signatures
-    asus_dll.InitializeWinIo.restype = ctypes.c_bool
-    asus_dll.ShutdownWinIo.restype = ctypes.c_bool
-    asus_dll.HealthyTable_SetFanIndex.argtypes = [ctypes.c_byte]
-    asus_dll.HealthyTable_SetFanTestMode.argtypes = [ctypes.c_char]
-    asus_dll.HealthyTable_SetFanPwmDuty.argtypes = [ctypes.c_byte]
-    asus_dll.HealthyTable_FanRPM.restype = ctypes.c_int
-    asus_dll.HealthyTable_FanCounts.restype = ctypes.c_int
-    asus_dll.Thermal_Read_Cpu_Temperature.restype = ctypes.c_ulong
-
-# Initialize WinIo
-if sys.platform == "win32":
-    if not asus_dll.InitializeWinIo():
-        print("Failed to initialize WinIo")
-        sys.exit()
-else:
-    print("Running on non-Windows platform, skipping WinIO initialization.")
-
-fan_speed = 0
-
-last_fan = -1
-avg_temp = -1
-
 config = {}
-
 not_break = True
-n = 0
-
 image_path = resource_path("icon.png")
 config_path = './config.json'
-
-deadzone = 10
-
 status_str = ''
-
 icon = None
+fan_controller = None
 
-driver_fix = False
-
-
-def toggle_startup(icon):
-    if sys.platform == "win32":
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS)
-            value, regtype = winreg.QueryValueEx(key, "FanControl")
-            if value:
-                winreg.DeleteValue(key, "FanControl")
-                custom_notify(icon, "Removed from startup", "Fan Control")
-            else:
-                winreg.SetValueEx(key, "FanControl", 0, winreg.REG_SZ, f'"{sys.executable}" "{os.path.abspath(__file__)}"')
-                custom_notify(icon, "Added to startup", "Fan Control")
-            winreg.CloseKey(key)
-        except WindowsError:
-            winreg.SetValueEx(key, "FanControl", 0, winreg.REG_SZ, f'"{sys.executable}" "{os.path.abspath(__file__)}"')
-            custom_notify(icon, "Added to startup", "Fan Control")
-            winreg.CloseKey(key)
-
-
-def get_temperature():
-    """Get current temperature"""
-    if sys.platform == "win32":
-        temp_ulong = asus_dll.Thermal_Read_Cpu_Temperature()
-        temp_celsius = temp_ulong
-        return temp_celsius
-    else:
-        try:
-            # Attempt to get CPU temperature using lm_sensors
-            result = subprocess.run(['sensors'], capture_output=True, text=True, check=True)
-            output = result.stdout
-            # This regex tries to find a temperature value for 'Package id' or 'Core'
-            # It's a common pattern for CPU temperatures in `sensors` output.
-            match = re.search(r'(Package id|Core \d+):\s*\+?(-?\d+\.?\d*)°C', output)
-            if match:
-                return float(match.group(2))
-            else:
-                print("Could not parse temperature from 'sensors' output.")
-                return 0 # Return 0 or handle error appropriately
-        except FileNotFoundError:
-            print("Command 'sensors' not found. Make sure lm_sensors is installed.")
-            return 0 # Return 0 or handle error appropriately
-        except subprocess.CalledProcessError as e:
-            print(f"Error executing 'sensors': {e}")
-            return 0 # Return 0 or handle error appropriately
-
-
-def get_fan_speed():
-    """Get current fan speed"""
-    fan_speeds = []
-    fan_count = asus_dll.HealthyTable_FanCounts()
-    for i in range(fan_count):
-        asus_dll.HealthyTable_SetFanIndex(i)
-        fan_speed = asus_dll.HealthyTable_FanRPM()
-        fan_speeds.append(fan_speed)
-    return ", ".join(map(str, fan_speeds))
-
-
-def set_asusctl_fan_curve(percentage: int):
-    """Set fan curve using asusctl for non-Windows platforms."""
-    global fan_speed_percentage
-    fan_speed_percentage = percentage
-
-    # Ensure 100% at 100c and at least 50% at 90c
-    p90 = max(50, percentage) # At least 50% at 90c
-    p100 = 100 # Always 100% at 100c
-
-    curve_data = f"30c:{percentage}%,40c:{percentage}%,50c:{percentage}%,60c:{percentage}%,70c:{percentage}%,80c:{percentage}%,90c:{p90}%,100c:{p100}%"
-
-    commands = [
-        f"asusctl fan-curve -m Quiet -f cpu -D {curve_data}",
-        f"asusctl fan-curve -m Quiet -f gpu -D {curve_data}",
-        "asusctl fan-curve -m Quiet -e true"
-    ]
-    for cmd in commands:
-        try:
-            subprocess.run(cmd, shell=True, check=True)
-            print(f"Executed: {cmd}")
-        except subprocess.CalledProcessError as e:
-            print(f"Error executing '{cmd}': {e}")
-        except FileNotFoundError:
-            print(f"Command '{cmd.split(' ')[0]}' not found. Make sure asusctl is installed and in your PATH.")
-
-def set_fan_speed(speed):
-    """Set fan speed"""
-    if sys.platform == "win32":
-        out_speed = deadzone + (speed * (100 - deadzone) / 100)
-        if out_speed <= deadzone:
-            out_speed = 0
-
-        value = int(out_speed / 100.0 * 255)
-        
-        fan_count = asus_dll.HealthyTable_FanCounts()
-        print(f'{fan_count=}')
-        print(f'{value=}')
-        for i in range(fan_count):
-            asus_dll.HealthyTable_SetFanIndex(i)
-            asus_dll.HealthyTable_SetFanTestMode(1)
-            asus_dll.HealthyTable_SetFanPwmDuty(value)
-    else:
-        set_asusctl_fan_curve(speed)
-
+def shutdown():
+    """Perform cleanup before exit."""
+    global fan_controller
+    if fan_controller and fan_controller.utils: # Check if fan_controller and its utils instance exist
+        fan_controller.utils.shutdown_cleanup()
 
 def on_exit(icon):
     global not_break
     not_break = False
     icon.stop()
-    if sys.platform == "win32":
-        asus_dll.ShutdownWinIo()
+    shutdown() # Call the new shutdown function
     exit()
-
 
 def save_config():
     global config
@@ -217,17 +80,24 @@ def change_temp_setting(key, delta):
 def toggle_always_change(icon, item):
     update_config("always_change", not config["always_change"])
 
+
 def show_status(icon):
     config_status = "\nCurrent Configuration:\n"
     for key, value in config.items():
         config_status += f"{key}: {value}\n"
-    custom_notify(icon, f"Current temperature: {get_temperature()}°C\n{get_fan_speed()}   ({int(fan_speed)}%)\n{status_str}{config_status}")
+    
+    current_temp = fan_controller.utils.get_temperature() if fan_controller and fan_controller.utils else "N/A"
+    current_fan_speed_display = fan_controller.utils.get_fan_speed_display() if fan_controller and fan_controller.utils else "N/A"
+    current_fan_percentage = int(fan_controller.fan_speed) if fan_controller else "N/A"
 
+    custom_notify(icon, f"Current temperature: {current_temp}°C\n{current_fan_speed_display}   ({current_fan_percentage}%)\n{status_str}{config_status}", "Fan Control Status")
 
 def main():
+    print("Main application starting...")
     global image_path
     global not_break
     global icon
+    global fan_controller
     image = Image.open(image_path).resize((64, 64))
     
     menu = pystray.Menu(
@@ -259,7 +129,7 @@ def main():
             )),
             pystray.MenuItem('Always Change Fan Speed', toggle_always_change, checked=lambda item: config.get("always_change", False))
         )),
-        pystray.MenuItem('Toggle Auto Start', toggle_startup),
+        pystray.MenuItem('Toggle Auto Start', lambda icon_obj, item: utils_instance.toggle_startup(icon_obj)),
         pystray.MenuItem('Exit', on_exit)
     )
 
@@ -267,11 +137,20 @@ def main():
     custom_notify(icon, "Starting FAN control", "Fan Control")
     time.sleep(2)
     
+    load_config() # Load config before initializing FanController
+
+    # Instantiate the correct utility class based on the platform
+    if sys.platform == "win32":
+        utils_instance = UtilsWin(resource_path)
+    else:
+        utils_instance = UtilsLinux()
+    
+    fan_controller = FanController(config, utils_instance)
+    
+    print("Launching setup thread...")
     threading.Thread(target=setup).start()
     
     icon.run()
-
-
 
 def load_config():
     global config
@@ -293,71 +172,17 @@ def load_config():
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=4)
 
-
 def setup():
-    global fan_speed, last_fan, avg_temp, n, status_str, driver_fix
+    global status_str
+    print("Setup thread started.")
     
-    load_config()
-
     while not_break:
-        
-        status_str = 'Everything ok'
-        
-        temp = get_temperature()
-        print(temp)
-        
-        if temp > config["max_temp"]:
-            fan_speed += (temp-config["max_temp"])/2
-        
-        if temp < config["min_temp"]:
-            fan_speed -= (config["min_temp"]-temp)/5
-        
-        
-        if avg_temp == -1: avg_temp = temp
-        D = (temp - avg_temp) * config["change_factor"]
-        avg_temp = ((avg_temp * 9 + temp) / 10)
-        
-        fan_speed += max(D, 0)
-        
-        
-        if temp > config["full_at_temp"]: fan_speed = 100
-        if temp < config["stop_at_temp"]: fan_speed = 0
-        
-        fan_speed = int(fan_speed)
-        if fan_speed < 0: fan_speed = 0
-        if fan_speed > 100: fan_speed = 100
-        
-        if temp < 5:
-            set_fan_speed(100)
-            time.sleep(10)
-            status_str = 'CRITITAL: Cannot gather CPU temp'
-        
-        if last_fan != fan_speed or config["always_change"] or n > 6:
-            set_fan_speed(int(fan_speed))
-        last_fan = fan_speed
-        
-        if sys.platform == "win32" and not driver_fix:
-            print('Running driver fix')
-            os.system('run.bat')
-            driver_fix = True
-            continue
-        elif not driver_fix: # For non-Windows, just mark as fixed
-            print('Skipping driver fix for non-Windows platform.')
-            driver_fix = True
-            continue
-        
+        print(f"Calling fan_controller.controller_loop()...")
+        _, status_str = fan_controller.controller_loop() # Unpack the tuple correctly
+        print(f"Controller loop returned status: {status_str}")
         if status_str != 'Everything ok':
             custom_notify(icon, status_str)
             time.sleep(10)
-        
-        time.sleep(1)
-        if temp < config["stop_at_temp"] and D < 2:
-            time.sleep(4)
-            if temp < config["stop_at_temp"] - 20:
-                time.sleep(5)
-        n += 1
+        time.sleep(1) # This sleep is handled inside controller_loop now, but keep for main loop
 
-
-
-if __name__ == "__main__":
-    main()
+main()
